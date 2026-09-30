@@ -2,7 +2,7 @@
 
 **A strategy host, execution bridge and custom bar-construction suite for NinjaTrader 8 — one execution stack, six trading models, and a loopback API that routes external quantitative signals into NT8 with backtest-to-live parity.**
 
-Roughly 7,600 lines of NinjaScript C# plus the Python counterpart to the bridge. Every file carries a header explaining the engineering decisions behind it, not just what the code does.
+About 9,300 lines: 6,500 of NinjaScript C# and 2,800 of the Python counterparts it is held against. Every file carries a header explaining the engineering decisions behind it, not just what the code does.
 
 ---
 
@@ -42,6 +42,21 @@ This framework addresses both directly.
 
 Those two decisions connect: real excursion data is what allows the Monte Carlo model in the host to simulate a **funded-account trailing drawdown**, where a trade that closed at +1R after trading 2R against you can still breach the account rule intramove. A single equity curve cannot show that. Resampling the trade sequence can.
 
+### The parity claim is checkable, not asserted
+
+Most repositories that claim backtest-to-live parity ask you to take it on faith.
+Both sides are published here, side by side in the same folders:
+
+| Live, inside NinjaTrader | Offline, in research | What must agree |
+|---|---|---|
+| [`SignalBridge.cs`](api-bridge/SignalBridge.cs) | [`execution_handler.py`](api-bridge/execution_handler.py) | The 3-phase exit state machine — `Static_Only`, `Static_BE_Jump`, `Indicator_Ratchet` |
+| [`PrecisionWickRenko.cs`](bar-types/PrecisionWickRenko.cs) and siblings | [`renko_engine.py`](bar-types/renko_engine.py) | Where a brick closes, and the excursion recorded inside it |
+
+Read the exit geometry protocol at the top of `SignalBridge.cs`, then the mode
+handling in `execution_handler.py`. They are two implementations of one written
+specification. Maintaining both is a real cost, accepted because a backtest whose
+exits differ from the live path measures a strategy nobody will trade.
+
 ---
 
 ## Repository layout
@@ -50,9 +65,12 @@ Those two decisions connect: real excursion data is what allows the Monte Carlo 
 framework/      MasterTerminalBase — the host all strategies inherit from
                 RegimeFilter — market state classification
 strategies/     Six trading models, each implementing only its idea
-bar-types/      Four custom BarsType implementations
-api-bridge/     SignalBridge.cs (C#) + nt8_bridge.py (Python counterpart)
-docs/           Architecture diagrams and component notes
+bar-types/      Four custom BarsType implementations (C#)
+                renko_engine.py — the offline consolidator they are held against
+api-bridge/     SignalBridge.cs — the listener inside NinjaTrader
+                nt8_bridge.py — the Python client
+                execution_handler.py — the reference exit state machine
+docs/           Architecture diagrams and installation guide
 ```
 
 ### framework/
@@ -108,6 +126,18 @@ It binds to `IPAddress.Loopback` only, so the order-entry endpoint is unreachabl
 
 ---
 
+## Tech stack
+
+| | |
+|---|---|
+| **Language** | C# / .NET Framework (NinjaScript), Python 3.10+ |
+| **Platform** | NinjaTrader 8 — Indicators, Strategies, and custom `BarsType` implementations |
+| **UI** | WPF hosted inside NinjaTrader (`System.Windows.Controls`, `Media.Effects`) |
+| **Transport** | Raw TCP over loopback, line-delimited JSON (`JavaScriptSerializer`) |
+| **Concurrency** | Background listener thread, split locks for bracket state and socket writes, bounded-timeout teardown |
+| **Quantitative** | Garman-Klass volatility, ATR-adaptive bar construction, volume profile / POC, cumulative delta, Monte Carlo resampling |
+| **Performance** | Numba JIT kernels on the offline brick consolidator |
+
 ## Requirements
 
 - NinjaTrader 8
@@ -115,7 +145,9 @@ It binds to `IPAddress.Loopback` only, so the order-entry endpoint is unreachabl
 - `SignalBridge` requires a reference to `System.Web.Extensions` for `JavaScriptSerializer`
 - Python 3.10+ for the bridge counterpart
 
-Install NinjaScript files via **Tools → Edit NinjaScript**, paste, and compile with F5. Bar types require a NinjaTrader restart before appearing in the Data Series dropdown.
+Full steps, including compile order and the `System.Web.Extensions` reference, are in **[docs/INSTALLATION.md](docs/INSTALLATION.md)**.
+
+One trap worth repeating here: `MasterTerminalBase` must compile before any strategy that inherits it, and bar types need a NinjaTrader **restart** — not a reload — before they appear in the Data Series dropdown.
 
 ---
 
@@ -127,6 +159,7 @@ This repository is published to show engineering work on the NinjaTrader platfor
 - The six strategies are **research models**, not a recommendation to trade them.
 - The four bar types are **iterations on one problem**, kept together because the progression is the interesting part, not because all four should be installed.
 - `LevelRenko` was renamed from an internal working title when this repository was assembled; its registered display name changed with it.
+- The Python files are the **counterparts the C# is held against**, extracted from a larger private research system. They are published for comparison, not as a runnable research stack — the surrounding engine, data layer and models are not part of this repository.
 
 ---
 
