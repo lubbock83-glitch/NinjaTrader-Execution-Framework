@@ -2,7 +2,17 @@
 
 **A strategy host, execution bridge and custom bar-construction suite for NinjaTrader 8 — one execution stack, six trading models, and a loopback API that routes external quantitative signals into NT8 with backtest-to-live parity.**
 
-About 9,300 lines: 6,500 of NinjaScript C# and 2,800 of the Python counterparts it is held against. Every file carries a header explaining the engineering decisions behind it, not just what the code does.
+About 9,300 lines: 6,500 of NinjaScript C# and 2,800 of the Python counterparts it is held against. Every file opens with a header explaining the engineering decisions behind it — why, not what.
+
+### Under the hood
+
+| | |
+|---|---|
+| **Transport** | Raw TCP bound to `IPAddress.Loopback`, line-delimited JSON. Not an HTTP webhook — the order-entry endpoint is unreachable off-machine by construction, not by firewall rule. |
+| **Concurrency** | A background listener thread alongside NinjaTrader's order callbacks, with **two separate locks** — one for bracket state, one for socket writes — so a slow write can never block an order update. Bounded-timeout teardown, so shutdown cannot hang on a blocked socket. |
+| **Exit management** | A **3-phase state machine measured in Renko bricks**: static stop, breakeven jump, then an optional ratchet behind the high-water mark. It runs inside NinjaTrader, not across the socket. |
+| **Optimisation** | Each strategy declares **its own parameter space and its own scoring function**, so the host can search a strategy it knows nothing about. Session windows are strategy-supplied, which is what makes walk-forward evaluation possible per model. |
+| **Risk modelling** | Monte Carlo resampling against a funded-account **trailing** drawdown, driven by per-trade MFE/MAE rather than closed P&L. |
 
 ---
 
@@ -27,6 +37,28 @@ About 9,300 lines: 6,500 of NinjaScript C# and 2,800 of the Python counterparts 
 | **[SignalBridge.cs](api-bridge/SignalBridge.cs)** | API integration. A TCP listener hosted inside NinjaTrader, a typed JSON protocol, threaded socket handling with split locks, and a 3-phase trailing stop state machine deliberately placed on the platform side of the process boundary. |
 | **[MasterTerminalBase.cs](framework/MasterTerminalBase.cs)** | Architecture. A 985-line abstract Strategy that owns the WPF control surface, order lifecycle, regime scanner, parameter optimiser and Monte Carlo risk model. Six strategies inherit from it and implement six members each. |
 | **[PrecisionWickRenko.cs](bar-types/PrecisionWickRenko.cs)** | Platform mastery. A custom `BarsType` built from raw ticks that preserves true intra-brick excursion, with explicit handling for the NT8 reload lifecycle that otherwise emits thousands of phantom bricks. |
+
+---
+
+## How a position is managed
+
+Exit geometry travels **with** the order. Python says what trade to take and under
+what rules to leave it; NinjaTrader executes and manages it from there.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/diagrams/exit-state-machine-dark.svg">
+  <img alt="The three-phase exit state machine: a position starts with a static stop, jumps to breakeven once the high-water mark reaches a configured fraction of the target, and then optionally ratchets a fixed brick distance behind the high-water mark. Three exit modes select how far along this chain a trade travels." src="docs/diagrams/exit-state-machine-light.svg">
+</picture>
+
+Distances are expressed in **bricks**, not ticks or ATR multiples. On a Renko
+series a brick is a fixed quantum of price movement, so "trail two bricks behind
+the high-water mark" means the same thing in a quiet overnight session as it does
+at the cash open — which a tick distance does not.
+
+Placing the machine on the platform side of the socket is the decision that
+matters most here. Routing every trail adjustment back over the wire would add a
+round trip to each one, and a research process that crashed mid-trade would leave
+a live position with a stop that had quietly stopped moving.
 
 ---
 
